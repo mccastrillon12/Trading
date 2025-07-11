@@ -53,15 +53,15 @@ while True:
         time.sleep(60)
         continue
 
-    # ✅ Pedimos las 2 últimas velas (la más reciente y la anterior)
-    rates_m1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, 2)
-    if rates_m1 is None or len(rates_m1) < 2:
+    # ✅ Obtenemos las 2 últimas velas M1
+    rates_m1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)
+    if rates_m1 is None or len(rates_m1) < 1:
         mt5.shutdown()
         time.sleep(60)
         continue
 
     vela_anterior = rates_m1[0]
-    vela_actual = rates_m1[1]
+    vela_actual = rates_m1[0]
     tiempo_vela = datetime.fromtimestamp(vela_actual['time'])
 
     if tiempo_vela == ultimo_chequeo:
@@ -73,14 +73,21 @@ while True:
     cuerpo = abs(close - open_)
     mitad_cuerpo = cuerpo * 0.5
 
+    # === Datos de la vela anterior
     apertura_anterior = vela_anterior['open']
+    cierre_anterior = vela_anterior['close']
+    alto_anterior = vela_anterior['high']
+    bajo_anterior = vela_anterior['low']
 
     # Detectar ruptura de resistencia
     if close > ultimo_alto and (close - open_ > mitad_cuerpo) and close > open_:
         print("\nROMPIMIENTO")
         print(f" Cierre vela: {close:.5f} @ {tiempo_vela}")
         print(f" rompio resistencia")
-        print(f" apertura vela anterior: {apertura_anterior:.5f}")
+
+        # Mostrar mecha inferior si existió
+        valor_base = min(apertura_anterior, cierre_anterior, bajo_anterior)
+        print(f" valor inferior vela anterior: {valor_base:.5f}")
         print("finalizado")
         mt5.shutdown()
         break
@@ -90,7 +97,10 @@ while True:
         print("\nROMPIMIENTO")
         print(f" Cierre vela: {close:.5f} @ {tiempo_vela}")
         print(f" rompio soporte")
-        print(f" apertura vela anterior: {apertura_anterior:.5f}")
+
+        # Mostrar mecha superior si existió
+        valor_base = max(apertura_anterior, cierre_anterior, alto_anterior)
+        print(f" valor superior vela anterior: {valor_base:.5f}")
         print("finalizado")
         mt5.shutdown()
         break
