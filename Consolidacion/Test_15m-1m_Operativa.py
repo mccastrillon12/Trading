@@ -67,8 +67,12 @@ try:
         # Validar ruptura con condición del 50% del cuerpo por fuera
         if vela['close'] > resistencia and (cuerpo_alto - resistencia) >= mitad_cuerpo:
             print(f"🚀 Ruptura ALCISTA | Vela cerró a las {hora_vela} UTC | Cuerpo por encima: {cuerpo_alto - resistencia:.5f} (≥ 50%)")
+            print(f"🔎 Precio mecha superior: {vela['high']:.5f} | Cuerpo alto: {cuerpo_alto:.5f}")
+            print(f"🔎 Precio mecha inferior: {vela['low']:.5f} | Cuerpo bajo: {cuerpo_bajo:.5f}")
         elif vela['close'] < soporte and (soporte - cuerpo_bajo) >= mitad_cuerpo:
             print(f"📉 Ruptura BAJISTA | Vela cerró a las {hora_vela} UTC | Cuerpo por debajo: {soporte - cuerpo_bajo:.5f} (≥ 50%)")
+            print(f"🔎 Precio mecha superior: {vela['high']:.5f} | Cuerpo alto: {cuerpo_alto:.5f}")
+            print(f"🔎 Precio mecha inferior: {vela['low']:.5f} | Cuerpo bajo: {cuerpo_bajo:.5f}")
 
         tiempo_restante = 60 - datetime.now(timezone.utc).second
         time.sleep(max(tiempo_restante, 1))
