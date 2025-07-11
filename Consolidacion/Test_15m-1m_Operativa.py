@@ -1,7 +1,6 @@
 import MetaTrader5 as mt5
 import pandas as pd
-import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 symbol = "EURUSD"
 
@@ -10,13 +9,22 @@ if not mt5.initialize():
     print("❌ No se pudo conectar a MT5")
     quit()
 
-# === FUNCIÓN PARA DETECTAR PIVOTES EN M15 (solo una vez) ===
+# === OBTENER HORA DEL SERVIDOR MT5 ===
+tick = mt5.symbol_info_tick(symbol)
+if tick is not None:
+    hora_utc = datetime.fromtimestamp(tick.time, tz=timezone.utc)
+  
+    print(f"🕒 Hora del servidor MT5 (GMT+3): {hora_utc.strftime('%Y-%m-%d %H:%M:%S')}")
+else:
+    print("⚠️ No se pudo obtener la hora del servidor.")
+
+# === FUNCIÓN PARA DETECTAR PIVOTES EN M1 ===
 def obtener_ultimos_pivotes():
-    rates_m15 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 200)
-    if rates_m15 is None or len(rates_m15) < 3:
+    rates_m1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 200)
+    if rates_m1 is None or len(rates_m1) < 3:
         return None, None
 
-    df = pd.DataFrame(rates_m15)
+    df = pd.DataFrame(rates_m1)
     df['time'] = pd.to_datetime(df['time'], unit='s')
     pivotes_altos = []
     pivotes_bajos = []
@@ -40,77 +48,8 @@ if ultimo_alto is None or ultimo_bajo is None:
     quit()
 
 print("🟣 Niveles detectados:")
-print(f"soporte    : {ultimo_bajo:.5f}")
 print(f"resistencia: {ultimo_alto:.5f}")
+print(f"soporte    : {ultimo_bajo:.5f}")
 
-ultimo_chequeo = None
-ultimo_mensaje_info = datetime.now() - timedelta(minutes=15)
-
-# === LOOP PARA MONITOREO DE ROMPIMIENTO ===
-while True:
-    if not mt5.initialize():
-        print("❌ Reconexión fallida a MT5")
-        time.sleep(60)
-        continue
-
-    # ✅ Obtenemos las 2 últimas velas M1
-    rates_m1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)
-    if rates_m1 is None or len(rates_m1) < 1:
-        mt5.shutdown()
-        time.sleep(60)
-        continue
-
-    vela_anterior = rates_m1[0]
-    vela_actual = rates_m1[0]
-    tiempo_vela = datetime.fromtimestamp(vela_actual['time'])
-
-    if tiempo_vela == ultimo_chequeo:
-        time.sleep(1)
-        continue
-
-    open_ = vela_actual['open']
-    close = vela_actual['close']
-    cuerpo = abs(close - open_)
-    mitad_cuerpo = cuerpo * 0.5
-
-    # === Datos de la vela anterior
-    apertura_anterior = vela_anterior['open']
-    cierre_anterior = vela_anterior['close']
-    alto_anterior = vela_anterior['high']
-    bajo_anterior = vela_anterior['low']
-
-    # Detectar ruptura de resistencia
-    if close > ultimo_alto and (close - open_ > mitad_cuerpo) and close > open_:
-        print("\nROMPIMIENTO")
-        print(f" Cierre vela: {close:.5f} @ {tiempo_vela}")
-        print(f" rompio resistencia")
-
-        # Mostrar mecha inferior si existió
-        valor_base = min(apertura_anterior, cierre_anterior, bajo_anterior)
-        print(f" valor inferior vela anterior: {valor_base:.5f}")
-        print("finalizado")
-        mt5.shutdown()
-        break
-
-    # Detectar ruptura de soporte
-    elif close < ultimo_bajo and (open_ - close > mitad_cuerpo) and close < open_:
-        print("\nROMPIMIENTO")
-        print(f" Cierre vela: {close:.5f} @ {tiempo_vela}")
-        print(f" rompio soporte")
-
-        # Mostrar mecha superior si existió
-        valor_base = max(apertura_anterior, cierre_anterior, alto_anterior)
-        print(f" valor superior vela anterior: {valor_base:.5f}")
-        print("finalizado")
-        mt5.shutdown()
-        break
-
-    # Mostrar mensaje solo cada 15 minutos
-    ahora = datetime.now()
-    if ahora - ultimo_mensaje_info >= timedelta(minutes=15):
-        print("⏳ Esperando rompimiento...")
-        ultimo_mensaje_info = ahora
-
-    ultimo_chequeo = tiempo_vela
-    mt5.shutdown()
-    time.sleep(60)
+# === CIERRE DE CONEXIÓN A MT5 ===
+mt5.shutdown()
