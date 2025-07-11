@@ -53,13 +53,22 @@ try:
         ultimo_cierre_ts = cierre_ts
         rango = vela['high'] - vela['low']
         cuerpo = abs(vela['close'] - vela['open'])
-        pct = cuerpo / rango if rango else 0
+        cuerpo_alto = max(vela['open'], vela['close'])
+        cuerpo_bajo = min(vela['open'], vela['close'])
+        mitad_cuerpo = cuerpo * 0.5
+
+        # Calcular y mostrar las mechas
+        mecha_superior = vela['high'] - cuerpo_alto
+        mecha_inferior = cuerpo_bajo - vela['low']
+ 
+
         hora_vela = datetime.fromtimestamp(cierre_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
-        if vela['close'] > resistencia and pct >= 0.5:
-            print(f"🚀 Ruptura ALCISTA | Vela cerró a las {hora_vela} UTC | Cuerpo: {pct*100:.1f}%")
-        elif vela['close'] < soporte and pct >= 0.5:
-            print(f"📉 Ruptura BAJISTA | Vela cerró a las {hora_vela} UTC | Cuerpo: {pct*100:.1f}%")
+        # Validar ruptura con condición del 50% del cuerpo por fuera
+        if vela['close'] > resistencia and (cuerpo_alto - resistencia) >= mitad_cuerpo:
+            print(f"🚀 Ruptura ALCISTA | Vela cerró a las {hora_vela} UTC | Cuerpo por encima: {cuerpo_alto - resistencia:.5f} (≥ 50%)")
+        elif vela['close'] < soporte and (soporte - cuerpo_bajo) >= mitad_cuerpo:
+            print(f"📉 Ruptura BAJISTA | Vela cerró a las {hora_vela} UTC | Cuerpo por debajo: {soporte - cuerpo_bajo:.5f} (≥ 50%)")
 
         tiempo_restante = 60 - datetime.now(timezone.utc).second
         time.sleep(max(tiempo_restante, 1))
