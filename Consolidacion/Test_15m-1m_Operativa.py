@@ -12,7 +12,7 @@ if not mt5.initialize():
 
 # === FUNCIÓN PARA DETECTAR PIVOTES EN M15 (solo una vez) ===
 def obtener_ultimos_pivotes():
-    rates_m15 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 200)
+    rates_m15 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 200)
     if rates_m15 is None or len(rates_m15) < 3:
         return None, None
 
@@ -53,29 +53,34 @@ while True:
         time.sleep(60)
         continue
 
-    rates_m1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, 1)
-    if rates_m1 is None or len(rates_m1) == 0:
+    # ✅ Pedimos las 2 últimas velas (la más reciente y la anterior)
+    rates_m1 = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, 2)
+    if rates_m1 is None or len(rates_m1) < 2:
         mt5.shutdown()
         time.sleep(60)
         continue
 
-    vela = rates_m1[0]
-    tiempo_vela = datetime.fromtimestamp(vela['time'])
+    vela_anterior = rates_m1[0]
+    vela_actual = rates_m1[1]
+    tiempo_vela = datetime.fromtimestamp(vela_actual['time'])
 
     if tiempo_vela == ultimo_chequeo:
         time.sleep(1)
         continue
 
-    open_ = vela['open']
-    close = vela['close']
+    open_ = vela_actual['open']
+    close = vela_actual['close']
     cuerpo = abs(close - open_)
     mitad_cuerpo = cuerpo * 0.5
+
+    apertura_anterior = vela_anterior['open']
 
     # Detectar ruptura de resistencia
     if close > ultimo_alto and (close - open_ > mitad_cuerpo) and close > open_:
         print("\nROMPIMIENTO")
         print(f" Cierre vela: {close:.5f} @ {tiempo_vela}")
-        print(" rompio resistencia")
+        print(f" rompio resistencia")
+        print(f" apertura vela anterior: {apertura_anterior:.5f}")
         print("finalizado")
         mt5.shutdown()
         break
@@ -84,7 +89,8 @@ while True:
     elif close < ultimo_bajo and (open_ - close > mitad_cuerpo) and close < open_:
         print("\nROMPIMIENTO")
         print(f" Cierre vela: {close:.5f} @ {tiempo_vela}")
-        print(" rompio soporte")
+        print(f" rompio soporte")
+        print(f" apertura vela anterior: {apertura_anterior:.5f}")
         print("finalizado")
         mt5.shutdown()
         break
