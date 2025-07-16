@@ -11,19 +11,36 @@ if not mt5.initialize():
 
 # === FUNCIÓN PARA DETECTAR ÚLTIMO SOPORTE Y RESISTENCIA EN M1 ===
 def detectar_pivotes():
-    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 200)
+    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 300)
     if rates is None or len(rates) < 3:
         return None, None
     df = pd.DataFrame(rates)
+
     piv_alto, piv_bajo = [], []
+
     for i in range(1, len(df) - 1):
         if df.loc[i, 'high'] > df.loc[i - 1, 'high'] and df.loc[i, 'high'] > df.loc[i + 1, 'high']:
-            piv_alto.append(df.loc[i, 'high'])
+            piv_alto.append((df.loc[i, 'time'], df.loc[i, 'high']))
         if df.loc[i, 'low'] < df.loc[i - 1, 'low'] and df.loc[i, 'low'] < df.loc[i + 1, 'low']:
-            piv_bajo.append(df.loc[i, 'low'])
+            piv_bajo.append((df.loc[i, 'time'], df.loc[i, 'low']))
+
+    # ✅ CORRECTO: usar timestamp, no el índice `last`
+    last = len(df) - 1
+    if df.loc[last, 'high'] > df.loc[last - 1, 'high'] and df.loc[last, 'high'] > df.loc[last - 2, 'high']:
+        piv_alto.append((df.loc[last, 'time'], df.loc[last, 'high']))
+    if df.loc[last, 'low'] < df.loc[last - 1, 'low'] and df.loc[last, 'low'] < df.loc[last - 2, 'low']:
+        piv_bajo.append((df.loc[last, 'time'], df.loc[last, 'low']))
+
     if not piv_alto or not piv_bajo:
         return None, None
-    return piv_alto[-1], piv_bajo[-1]
+
+    # Ordenar por timestamp
+    piv_alto.sort(key=lambda x: x[0])
+    piv_bajo.sort(key=lambda x: x[0])
+
+    # Devolver solo el valor (precio) del pivote más reciente
+    return piv_alto[-1][1], piv_bajo[-1][1]
+
 
 # === CALCULAR NIVELES UNA SOLA VEZ ===
 resistencia, soporte = detectar_pivotes()
@@ -69,10 +86,12 @@ try:
             print(f"🚀 Ruptura ALCISTA | Vela cerró a las {hora_vela} UTC | Cuerpo por encima: {cuerpo_alto - resistencia:.5f} (≥ 50%)")
             print(f"🔎 Precio mecha superior: {vela['high']:.5f} | Cuerpo alto: {cuerpo_alto:.5f}")
             print(f"🔎 Precio mecha inferior: {vela['low']:.5f} | Cuerpo bajo: {cuerpo_bajo:.5f}")
+            break
         elif vela['close'] < soporte and (soporte - cuerpo_bajo) >= mitad_cuerpo:
             print(f"📉 Ruptura BAJISTA | Vela cerró a las {hora_vela} UTC | Cuerpo por debajo: {soporte - cuerpo_bajo:.5f} (≥ 50%)")
             print(f"🔎 Precio mecha superior: {vela['high']:.5f} | Cuerpo alto: {cuerpo_alto:.5f}")
             print(f"🔎 Precio mecha inferior: {vela['low']:.5f} | Cuerpo bajo: {cuerpo_bajo:.5f}")
+            break
 
         tiempo_restante = 60 - datetime.now(timezone.utc).second
         time.sleep(max(tiempo_restante, 1))
