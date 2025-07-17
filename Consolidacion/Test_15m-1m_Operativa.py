@@ -1,136 +1,208 @@
 import MetaTrader5 as mt5
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import time
-from datetime import datetime, timezone
 
+# === CONFIGURACIÓN GENERAL ===
 symbol = "EURUSD"
+timeframe_m1 = mt5.TIMEFRAME_M1
+timeframe_m15 = mt5.TIMEFRAME_M15
+risk_pct_loss = 0.01
 
 # === CONEXIÓN A MT5 ===
 if not mt5.initialize():
-    raise RuntimeError("❌ No se pudo conectar a MT5")
+    print("❌ Error al conectar con MT5:", mt5.last_error())
+    quit()
+print("✅ Conectado a MT5")
 
-# === FUNCIÓN PARA DETECTAR ÚLTIMO SOPORTE Y RESISTENCIA EN M1 ===
-def detectar_pivotes():
-    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 300)
-    if rates is None or len(rates) < 3:
+# === FUNCIONES AUXILIARES ===
+
+def calcular_zigzag(df, tramos=2):
+    pivotes = []
+    for i in range(tramos, len(df) - tramos):
+        es_alto = all(df.loc[i, 'high'] > df.loc[i - j, 'high'] and df.loc[i, 'high'] > df.loc[i + j, 'high'] for j in range(1, tramos + 1))
+        es_bajo = all(df.loc[i, 'low'] < df.loc[i - j, 'low'] and df.loc[i, 'low'] < df.loc[i + j, 'low'] for j in range(1, tramos + 1))
+        if es_alto:
+            pivotes.append({'tipo': 'alto', 'valor': df.loc[i, 'high'], 'tiempo': df.loc[i, 'time']})
+        elif es_bajo:
+            pivotes.append({'tipo': 'bajo', 'valor': df.loc[i, 'low'], 'tiempo': df.loc[i, 'time']})
+    return pd.DataFrame(pivotes)
+
+def calcular_lote(entrada, sl):
+    cuenta = mt5.account_info()
+    if cuenta is None:
+        print("⚠️ No se pudo obtener la información de la cuenta.")
+        return 0
+
+    capital_actual = cuenta.balance
+    riesgo_monetario = capital_actual * risk_pct_loss
+    valor_pip = 10  # Para EURUSD, 1 lote estándar = $10 por pip
+    riesgo_pips = abs(entrada - sl) * 10000
+    return round(riesgo_monetario / (riesgo_pips * valor_pip), 2) if riesgo_pips != 0 else 0
+
+def ejecutar_orden(tipo, entrada, sl, tp, lote):
+    tipo_orden = mt5.ORDER_TYPE_BUY if tipo == 'compra' else mt5.ORDER_TYPE_SELL
+    price = mt5.symbol_info_tick(symbol).ask if tipo == 'compra' else mt5.symbol_info_tick(symbol).bid
+
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lote,
+        "type": tipo_orden,
+        "price": price,
+        "sl": round(sl, 5),
+        "tp": round(tp, 5),
+        "deviation": 10,
+        "magic": 234000,
+        "comment": "Breakout en vivo",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    result = mt5.order_send(request)
+    if result.retcode == mt5.TRADE_RETCODE_DONE:
+        print(f"✅ {tipo.upper()} ejecutada a {round(price,5)} | TP: {round(tp,5)} | SL: {round(sl,5)}")
+    else:
+        print(f"❌ Error al ejecutar orden: {result.retcode} | {result.comment}")
+
+# === HORA SERVIDOR (desde vela M1) ===
+def obtener_hora_servidor():
+    velas = mt5.copy_rates_from_pos(symbol, timeframe_m1, 0, 1)
+    if velas is None or len(velas) == 0:
+        return None
+    return datetime.fromtimestamp(velas[0]['time'], tz=timezone.utc)
+
+# === OBTENER NIVELES DE RUPTURA (pivotes M15) ===
+def obtener_niveles_ruptura():
+    now = obtener_hora_servidor()
+    if now is None:
+        return (None, None)
+
+    hoy_3am = now.replace(hour=3, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+
+    desde = hoy_3am - timedelta(hours=24)
+    datos_m15 = mt5.copy_rates_range(symbol, timeframe_m15, desde, hoy_3am)
+
+    df_15m = pd.DataFrame(datos_m15)
+    df_15m['time'] = pd.to_datetime(df_15m['time'], unit='s')
+
+    zigzag = calcular_zigzag(df_15m)
+    zigzag = zigzag[zigzag['tiempo'] < hoy_3am]  # Solo pivotes antes de las 3:00am exactas
+
+    ult_alto = zigzag[zigzag['tipo'] == 'alto'].iloc[-1] if not zigzag[zigzag['tipo'] == 'alto'].empty else None
+    ult_bajo = zigzag[zigzag['tipo'] == 'bajo'].iloc[-1] if not zigzag[zigzag['tipo'] == 'bajo'].empty else None
+
+    if ult_alto is not None and ult_bajo is not None:
+        print(f"📈 Último ALTO antes de las 3:00am: {round(ult_alto['valor'], 5)} a las {ult_alto['tiempo'].strftime('%H:%M:%S')}")
+        print(f"📉 Último BAJO antes de las 3:00am: {round(ult_bajo['valor'], 5)} a las {ult_bajo['tiempo'].strftime('%H:%M:%S')}")
+        return (ult_alto['valor'], ult_bajo['valor'])
+    else:
+        print("❌ No se encontraron pivotes antes de las 3:00am.")
+        return (None, None)
+
+def detectar_primera_ruptura_m1(high_ref, low_ref, desde):
+    hasta = obtener_hora_servidor()
+    datos_m1 = mt5.copy_rates_range(symbol, timeframe_m1, desde, hasta)
+
+    if datos_m1 is None or len(datos_m1) == 0:
+        print("⚠️ No se pudieron obtener velas M1 para detectar ruptura.")
         return None, None
-    df = pd.DataFrame(rates)
 
-    piv_alto, piv_bajo = [], []
+    for vela in datos_m1:
+        time_utc = datetime.fromtimestamp(vela['time'], tz=timezone.utc)
+        if vela['high'] > high_ref:
+            return "alcista", time_utc
+        elif vela['low'] < low_ref:
+            return "bajista", time_utc
+    return None, None
 
-    for i in range(1, len(df) - 1):
-        if df.loc[i, 'high'] > df.loc[i - 1, 'high'] and df.loc[i, 'high'] > df.loc[i + 1, 'high']:
-            piv_alto.append((df.loc[i, 'time'], df.loc[i, 'high']))
-        if df.loc[i, 'low'] < df.loc[i - 1, 'low'] and df.loc[i, 'low'] < df.loc[i + 1, 'low']:
-            piv_bajo.append((df.loc[i, 'time'], df.loc[i, 'low']))
+# === EJECUCIÓN EN TIEMPO REAL ===
+print("⏳ Esperando que sea hora de operar (3:00am servidor)...")
+sesion_iniciada = False
+niveles_establecidos = False
+high_ref, low_ref = None, None
+ultimo_aviso_fuera_de_horario = datetime.min.replace(tzinfo=timezone.utc)
+ultima_impresion = None
 
-    last = len(df) - 1
-    if df.loc[last, 'high'] > df.loc[last - 1, 'high'] and df.loc[last, 'high'] > df.loc[last - 2, 'high']:
-        piv_alto.append((df.loc[last, 'time'], df.loc[last, 'high']))
-    if df.loc[last, 'low'] < df.loc[last - 1, 'low'] and df.loc[last, 'low'] < df.loc[last - 2, 'low']:
-        piv_bajo.append((df.loc[last, 'time'], df.loc[last, 'low']))
+while True:
+    now = obtener_hora_servidor()
+    if now is None:
+        print("⚠️ No se pudo obtener hora del servidor. Reintentando...")
+        time.sleep(60)
+        continue
 
-    if not piv_alto or not piv_bajo:
-        return None, None
+    if 3 <= now.hour < 5:
+        if not sesion_iniciada:
+            print(f"\n🕒 Inicia sesión de trading (Hora servidor UTC): {now.strftime('%H:%M:%S')}")
+            if not niveles_establecidos:
+                high_ref, low_ref = obtener_niveles_ruptura()
+                
+                if high_ref is not None and low_ref is not None:
+                    print(f"📈 Nivel resistencia (High M15): {round(high_ref, 5)}")
+                    print(f"📉 Nivel soporte (Low M15):     {round(low_ref, 5)}")
+                    niveles_establecidos = True
+                                    # Buscar primera vela que rompió
+                hoy_3am = now.replace(hour=3, minute=0, second=0, microsecond=0).replace(tzinfo=timezone.utc)
+                tipo, hora_ruptura = detectar_primera_ruptura_m1(high_ref, low_ref, hoy_3am)
+                if tipo and hora_ruptura:
+                    if tipo == "alcista":
+                        print(f"🚀 Primera ruptura ALCISTA detectada en vela de las {hora_ruptura.strftime('%H:%M:%S')} (UTC)")
+                    else:
+                        print(f"📉 Primera ruptura BAJISTA detectada en vela de las {hora_ruptura.strftime('%H:%M:%S')} (UTC)")
+                else:
+                    print("🔍 Aún no hay ruptura desde las 3:00am.")
 
-    piv_alto.sort(key=lambda x: x[0])
-    piv_bajo.sort(key=lambda x: x[0])
+            else:
+                    print("❌ No se pudieron calcular los niveles de ruptura.")
+                    time.sleep(60)
+                    continue
+            sesion_iniciada = True
 
-    return piv_alto[-1][1], piv_bajo[-1][1]
-
-# === CALCULAR NIVELES UNA SOLA VEZ ===
-resistencia, soporte = detectar_pivotes()
-if resistencia is None or soporte is None:
-    mt5.shutdown()
-    raise RuntimeError("❌ No se pudieron detectar los pivotes")
-
-print(f"🟣 Niveles fijos ➜  Resistencia: {resistencia:.5f} | Soporte: {soporte:.5f}")
-
-# === BUCLE DE MONITOREO EN TIEMPO REAL ===
-print("⏳ Esperando cierre de velas M1... (Ctrl+C para detener)")
-
-try:
-    ultimo_cierre_ts = None
-    while True:
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, 1)
-        if rates is None or len(rates) == 0:
-            time.sleep(1)
+        velas = mt5.copy_rates_from_pos(symbol, timeframe_m1, 1, 2)
+        if velas is None or len(velas) < 2:
+            print("⚠️ Sin datos suficientes. Esperando...")
+            time.sleep(60)
             continue
 
-        vela = rates[0]
-        cierre_ts = vela['time']
-        if cierre_ts == ultimo_cierre_ts:
-            time.sleep(1)
-            continue
+        vela = velas[0]
+        high = vela['high']
+        low = vela['low']
+        vela_time = datetime.fromtimestamp(vela['time'], tz=timezone.utc)
 
-        ultimo_cierre_ts = cierre_ts
-        cuerpo = abs(vela['close'] - vela['open'])
-        cuerpo_alto = max(vela['open'], vela['close'])
-        cuerpo_bajo = min(vela['open'], vela['close'])
-        mitad_cuerpo = cuerpo * 0.5
+        if high_ref is not None and high > high_ref:
+            entrada = mt5.symbol_info_tick(symbol).ask
+            sl = low
+            riesgo = abs(entrada - sl)
+            tp = entrada + 2 * riesgo
+            lote = calcular_lote(entrada, sl)
+            ejecutar_orden("compra", entrada, sl, tp, lote)
+            print(f"📍 Rompimiento ALCISTA detectado en vela de las {vela_time.strftime('%H:%M:%S')} (UTC)")
+            break
 
-        mecha_superior = vela['high'] - cuerpo_alto
-        mecha_inferior = cuerpo_bajo - vela['low']
+        elif low_ref is not None and low < low_ref:
+            entrada = mt5.symbol_info_tick(symbol).bid
+            sl = high
+            riesgo = abs(entrada - sl)
+            tp = entrada - 2 * riesgo
+            lote = calcular_lote(entrada, sl)
+            ejecutar_orden("venta", entrada, sl, tp, lote)
+            print(f"📍 Rompimiento BAJISTA detectado en vela de las {vela_time.strftime('%H:%M:%S')} (UTC)")
+            break
 
-        hora_vela = datetime.fromtimestamp(cierre_ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-
-        # === DETERMINAR COLOR DE LA VELA ===
-        if vela['close'] > vela['open']:
-            color_vela = "🟢 Alcista (verde)"
-        elif vela['close'] < vela['open']:
-            color_vela = "🔴 Bajista (roja)"
         else:
-            color_vela = "⚪ Doji (sin cuerpo)"
-
-        # === VALIDAR RUPTURA Y MOSTRAR INFORME ===
-        if vela['close'] > resistencia and (cuerpo_alto - resistencia) >= mitad_cuerpo:
-            print(f"\n🚀 Ruptura ALCISTA | Vela cerró a las {hora_vela} UTC | {color_vela}")
-            print(f"🔎 Cuerpo por encima: {cuerpo_alto - resistencia:.5f} (≥ 50%)")
-            print(f"🔎 Precio mecha superior: {vela['high']:.5f}")
-            print(f"🔎 Precio mecha inferior: {vela['low']:.5f}")
-
-            if cuerpo == 0:
-                print("⚠️ Cuerpo de tamaño 0 (Doji), no se pueden comparar mechas.")
-            else:
-                if mecha_superior >= cuerpo:
-                    porcentaje = (mecha_superior / cuerpo) * 100
-                    print(f"📏 Mecha superior: supera el cuerpo en un {porcentaje:.2f}%")
-                else:
-                    print(f"📏 Mecha superior: no supera el cuerpo")
-
-                if mecha_inferior >= cuerpo:
-                    porcentaje = (mecha_inferior / cuerpo) * 100
-                    print(f"📏 Mecha inferior: supera el cuerpo en un {porcentaje:.2f}%")
-                else:
-                    print(f"📏 Mecha inferior: no supera el cuerpo")
+            if ultima_impresion is None or (now - ultima_impresion).seconds >= 900:
+                print(f"⏱️ [{now.strftime('%H:%M:%S')}] Sin ruptura. Esperando...")
+                ultima_impresion = now
+    else:
+        if sesion_iniciada:
+            print("🛑 Sesión finalizada. Hora fuera del rango operativo.")
             break
+        else:
+            if (now - ultimo_aviso_fuera_de_horario).total_seconds() >= 900:
+                print(f"⏸️ Esperando horario de operación. Hora servidor: {now.strftime('%H:%M:%S')} (UTC)")
+                ultimo_aviso_fuera_de_horario = now
 
-        elif vela['close'] < soporte and (soporte - cuerpo_bajo) >= mitad_cuerpo:
-            print(f"\n📉 Ruptura BAJISTA | Vela cerró a las {hora_vela} UTC | {color_vela}")
-            print(f"🔎 Cuerpo por debajo: {soporte - cuerpo_bajo:.5f} (≥ 50%)")
-            print(f"🔎 Precio mecha superior: {vela['high']:.5f}")
-            print(f"🔎 Precio mecha inferior: {vela['low']:.5f}")
+    time.sleep(60)
 
-            if cuerpo == 0:
-                print("⚠️ Cuerpo de tamaño 0 (Doji), no se pueden comparar mechas.")
-            else:
-                if mecha_superior >= cuerpo:
-                    porcentaje = (mecha_superior / cuerpo) * 100
-                    print(f"📏 Mecha superior: supera el cuerpo en un {porcentaje:.2f}%")
-                else:
-                    print(f"📏 Mecha superior: no supera el cuerpo")
-
-                if mecha_inferior >= cuerpo:
-                    porcentaje = (mecha_inferior / cuerpo) * 100
-                    print(f"📏 Mecha inferior: supera el cuerpo en un {porcentaje:.2f}%")
-                else:
-                    print(f"📏 Mecha inferior: no supera el cuerpo")
-            break
-
-        tiempo_restante = 60 - datetime.now(timezone.utc).second
-        time.sleep(max(tiempo_restante, 1))
-
-except KeyboardInterrupt:
-    print("\n🛑 Monitoreo detenido por el usuario.")
-finally:
-    mt5.shutdown()
+# === CERRAR CONEXIÓN ===
+mt5.shutdown()

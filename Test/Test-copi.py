@@ -1,4 +1,4 @@
-# IMPORTS Y CONFIGURACIÓN BASE
+# === IMPORTS Y CONFIGURACIÓN BASE ===
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -21,7 +21,7 @@ capital_inicial = 10000
 capital = capital_inicial
 risk_pct_loss = 0.01
 
-# Obtener hora del servidor de MT5
+# OBTENER HORA DEL SERVIDOR
 ultima_vela = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)
 if ultima_vela is not None and len(ultima_vela) > 0:
     hora_servidor = datetime.fromtimestamp(ultima_vela[0]['time'], tz=timezone.utc)
@@ -30,23 +30,20 @@ else:
     print("⚠️ No se pudo obtener la hora del servidor.")
 
 # RANGO DE FECHAS
-hasta = datetime.now()
+hasta = datetime.now(timezone.utc)
 desde = hasta - timedelta(days=60)
 
-# DATOS HISTÓRICOS M15
+# DESCARGA DE DATOS
 datos_m15 = mt5.copy_rates_range(symbol, timeframe_m15, desde, hasta)
-
-# DATOS HISTÓRICOS M1
 datos_m1 = mt5.copy_rates_range(symbol, timeframe_m1, desde, hasta)
 mt5.shutdown()
 
-# PREPROCESAMIENTO
+# === PREPROCESAMIENTO ===
 df_15m = pd.DataFrame(datos_m15)
-df_15m['time'] = df_15m['time'].apply(lambda t: datetime.fromtimestamp(t, tz=timezone.utc))
+df_15m['time'] = pd.to_datetime(df_15m['time'], unit='s', utc=True)
 df_15m['hora_mt5'] = df_15m['time'].dt.hour
 
-# ZigZag para detectar pivotes
-def calcular_zigzag(df, desviacion=0.00001, tramos=2):
+def calcular_zigzag(df, tramos=2):
     pivotes = []
     for i in range(tramos, len(df) - tramos):
         es_alto = all(df.loc[i, 'high'] > df.loc[i - j, 'high'] and df.loc[i, 'high'] > df.loc[i + j, 'high'] for j in range(1, tramos + 1))
@@ -59,14 +56,13 @@ def calcular_zigzag(df, desviacion=0.00001, tramos=2):
 
 zigzag_15m = calcular_zigzag(df_15m)
 
-# DATOS M1
 df = pd.DataFrame(datos_m1)
-df['time'] = df['time'].apply(lambda t: datetime.fromtimestamp(t, tz=timezone.utc))
+df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
 df['hora_mt5'] = df['time'].dt.hour
 df['minuto_mt5'] = df['time'].dt.minute
 df['fecha_mt5'] = df['time'].dt.date
 
-# BACKTESTING
+# === BACKTESTING ===
 operaciones = []
 historico_capital = []
 fechas_operadas = set()
@@ -75,8 +71,11 @@ for fecha in sorted(df['fecha_mt5'].unique()):
     if fecha in fechas_operadas:
         continue
 
+    # Pivotes hasta las 03:00am UTC
+    limite_hora = datetime.combine(fecha, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=3)
     pivotes_del_dia = zigzag_15m[zigzag_15m['tiempo'].dt.date == fecha]
-    pivotes_previos = pivotes_del_dia[pivotes_del_dia['tiempo'].dt.hour < 19]
+    pivotes_previos = pivotes_del_dia[pivotes_del_dia['tiempo'] < limite_hora]
+
     if pivotes_previos.empty:
         continue
 
@@ -89,7 +88,8 @@ for fecha in sorted(df['fecha_mt5'].unique()):
     high_ref = ult_alto['valor']
     low_ref = ult_bajo['valor']
 
-    df_dia = df[(df['fecha_mt5'] == fecha) & (((df['hora_mt5'] == 19) & (df['minuto_mt5'] >= 1)) | (df['hora_mt5'] == 20))]
+    # Velas M1 entre 03:00 y 05:00 UTC
+    df_dia = df[(df['fecha_mt5'] == fecha) & (df['hora_mt5'] >= 3) & (df['hora_mt5'] < 5)]
 
     for i in range(1, len(df_dia) - 1):
         vela = df_dia.iloc[i]
@@ -148,6 +148,7 @@ for fecha in sorted(df['fecha_mt5'].unique()):
 
         operaciones.append({
             "fecha_ingreso": vela['time'].strftime("%Y-%m-%d"),
+            
             "hora_ingreso": vela['time'].strftime("%H:%M:%S"),
             "fecha_cierre": cierre.strftime("%Y-%m-%d"),
             "hora_cierre": cierre.strftime("%H:%M:%S"),
@@ -166,7 +167,7 @@ for fecha in sorted(df['fecha_mt5'].unique()):
         fechas_operadas.add(fecha)
         break
 
-# EXPORTACIÓN Y REPORTE
+# === EXPORTACIÓN Y REPORTE ===
 for op in operaciones:
     ingreso_dt = datetime.strptime(op["fecha_ingreso"] + " " + op["hora_ingreso"], "%Y-%m-%d %H:%M:%S")
     cierre_dt = datetime.strptime(op["fecha_cierre"] + " " + op["hora_cierre"], "%Y-%m-%d %H:%M:%S")
@@ -176,18 +177,21 @@ for op in operaciones:
     op["duracion_operacion"] = f"{horas}h {minutos}m"
     op["total_dias"] = duracion.days
 
+# Rutas para exportar
 base_path = "C:\\Users\\USUARIO\\Desktop\\python"
 csv_path = os.path.join(base_path, "estrategia_breakout.csv")
 img_path = os.path.join(base_path, "grafico_breakout.png")
 
+# Exportar CSV
 df_operaciones = pd.DataFrame(operaciones)
 df_operaciones.to_csv(csv_path, index=False, sep=';')
 
-# RESULTADOS EN CONSOLA
+# Mostrar resultados
 total = len(df_operaciones)
 ganadas = df_operaciones[df_operaciones['resultado'] == 'ganada'].shape[0]
 perdidas = df_operaciones[df_operaciones['resultado'] == 'perdida'].shape[0]
 efec = (ganadas / total * 100) if total else 0
+
 print("\n📊 RESULTADOS ESTRATEGIA BREAKOUT:")
 print(f"✅ Ganadas: {ganadas}")
 print(f"❌ Perdidas: {perdidas}")
@@ -195,7 +199,7 @@ print(f"📋 Total: {total}")
 print(f"🎯 Efectividad: {efec:.2f}%")
 print(f"💰 Capital final: {capital:.2f} USD")
 
-# GRÁFICO
+# === GRÁFICO DE CAPITAL ===
 fechas = [datetime.strptime(op["fecha_ingreso"] + " " + op["hora_ingreso"], "%Y-%m-%d %H:%M:%S") for op in operaciones]
 capitales = [op["capital_post"] for op in operaciones]
 
@@ -209,5 +213,4 @@ plt.grid(True)
 plt.tight_layout()
 plt.savefig(img_path)
 print(f"🖼️ Gráfico guardado: {img_path}")
-
 plt.show()
